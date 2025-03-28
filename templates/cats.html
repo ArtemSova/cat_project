@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <ul>
+        {% for cat in cats %}
+            <li>{{ cat.cat_name }} - {{ cat.cat_color }} - Age: {{ cat.cat_age }} - Rating: {{ cat.cat_rating }}</li>
+        {% endfor %}
+    </ul>
+    <a href="/create">Add a Cat</a>
+{% endblock %}
