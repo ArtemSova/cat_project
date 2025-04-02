@@ -1,0 +1,35 @@
+version: '3'
+
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  db:
+    image: postgres:latest
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"  # или любой другой порт, который использует ваше приложение
+    depends_on:
+      - redis
+    env_file:     # файл не выгружается на git, добавить руками по примеру .env-exemple
+      - .env
+    environment:
+      - REDIS_HOST=redis
+
+volumes:
+  redis_data:
+  db_data:

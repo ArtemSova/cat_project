@@ -1,16 +1,16 @@
+import json
 import secrets
 import uuid
 from datetime import datetime
 from http.client import HTTPException
 from typing import Annotated, Any
+
+from redis import asyncio as aioredis
 from fastapi import APIRouter, Depends, Request, Form, HTTPException, status, Response, Cookie
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from sqlalchemy import alias
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from fastapi.responses import JSONResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
-
 
 from app.orm import *
 from app.models import Cats
@@ -25,6 +25,11 @@ security = HTTPBasic()
 COOKIES: dict[str, dict[str, Any]] = {}
 # Ключ для куки из которого их читаем (может быть любая строчка)
 COOKIE_SESSION_ID_KEY = "web-app-session-id"
+
+
+# Функция для подключения к redis
+async def get_redis(request: Request) -> aioredis.Redis:
+    return request.app.state.redis
 
 
 # функция проверки совпадения логина и пароля
@@ -70,10 +75,79 @@ async def get_session_data(
         )
     return COOKIES[session_id]
 
-# ручка для основной страницы
-@router.get("/")
-async def read_cats(request: Request, db: AsyncSession = Depends(all_cats)):
-    return templates.TemplateResponse("cats.html", {"request": request, "cats": db})
+#-----------------------------------------ручки-------------------------------------------------
+
+# ручка для основной страницы со всеми котиками
+@router.get("/all_cats")
+async def all_cats(
+        request: Request,
+        redis: aioredis.Redis = Depends(get_redis),
+        db: AsyncSession = Depends(get_db)  # Нужно добавить отдельную зависимость для сессии
+):
+    # Попытка получить данные из Redis
+    all_cats_data = await redis.get("all_cats")
+
+    if not all_cats_data:
+        cats = await orm_all_cats()
+        if not cats:
+            raise HTTPException(status_code=404, detail="No cats found")
+
+        # Сериализовать данные для Redis
+        cats_data = [{
+            "cat_name": cat.cat_name,
+            "cat_color": cat.cat_color,
+            "cat_age": cat.cat_age,
+            "cat_rating": cat.cat_rating
+        } for cat in cats]
+
+        all_cats_data = json.dumps(cats_data)
+        await redis.set("all_cats", all_cats_data, ex=3600)  # Кэшировать на 1 час
+
+    # Десериализовать данные из кэша
+    cats = json.loads(all_cats_data)
+
+    return templates.TemplateResponse("cats.html", {"request": request, "cats": cats})
+
+# ручка для отображения конкретного котика
+@router.get("/{cat_name}")
+async def read_one_cat(
+        cat_name: str,
+        redis: aioredis.Redis = Depends(get_redis)
+):
+    # Попытка получить данные из Redis
+    cat_data = await redis.get(cat_name)
+    if not cat_data:
+        # Если данных нет в Redis, получить их из основного источника
+        cat = await orm_one_cat(cat_name)
+        if not cat:
+            raise HTTPException(status_code=404, detail="Cat not found")
+
+        # Сохранить данные в Redis
+        cat_data = json.dumps({
+            "cat_name": cat.cat_name,
+            "cat_color": cat.cat_color,
+            "cat_age": cat.cat_age,
+            "cat_rating": cat.cat_rating
+        })
+        await redis.set(cat_name, cat_data, ex=3600)  # Кэшировать на 1 час
+
+    # выгружаем данные в ручку уже из сохраненного кэша, а не из запроса orm
+    cat = json.loads(cat_data)
+    return JSONResponse(content={
+        "Имя Котика": cat["cat_name"],
+        "Цвет Котика": cat["cat_color"],
+        "Возраст Котика": cat["cat_age"],
+        "Рейтинг Котика": cat["cat_rating"]
+    })
+
+''' Если надо выгружать данные из запроса
+    return JSONResponse(content={
+        "Имя Котика": cat.cat_name,
+        "Цвет Котика": cat.cat_color,
+        "Возраст Котика": cat.cat_age,
+        "Рейтинг Котика": cat.cat_rating,
+    })
+'''
 
 
 # ручка для базовой аторизации (принимает логин и пароль)
@@ -94,7 +168,7 @@ async def get_user_name_cookie(
     response: Response,
     auth_username: str = Depends(get_auth_user_name),
 ):
-    session_id = str(generate_session_id())
+    session_id = str(await generate_session_id())
     COOKIES[session_id] = {
         "username": auth_username,
         "login_at": str(datetime.now()),
@@ -133,7 +207,7 @@ async def create_cat(
         new_cat = Cats(cat_name=cat_name, cat_color=cat_color, cat_age=cat_age)
         db.add(new_cat)
         await db.commit()
-        return RedirectResponse(url="/cats/", status_code=303)
+        return RedirectResponse(url="/all_cats/", status_code=303)
     raise HTTPException(status_code=403, detail="Forbidden")
 
 

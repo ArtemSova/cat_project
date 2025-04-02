@@ -18,11 +18,18 @@ async def get_db():
     async with session_factory() as db:
         yield db
 
-async def all_cats():
+async def orm_all_cats():
     async with session_factory() as session:
         query = select(Cats)
         result = await session.execute(query)
         cats = result.scalars().all()
+        return cats
+
+async def orm_one_cat(cat_name):
+    async with session_factory() as session:
+        query = select(Cats).where(Cats.cat_name==cat_name)
+        result = await session.execute(query)
+        cats = result.scalar_one_or_none()
         return cats
 
 async def new_cat(cat_name, cat_color, cat_age):
